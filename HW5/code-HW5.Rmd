@@ -1,0 +1,226 @@
+---
+title: "BST 222 - Homework 5"
+author: "Xiaowei Zeng"
+date: "`r Sys.Date()`"
+output: pdf_document
+# fontsize: 11pt
+#output: 
+#  pdf_document:
+#    number_sections: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The addicts data set is from a study by Caplehorn et al. (“Methadone Dosage and Retention of Patients in Maintenance Treatment,” Med. J. Aust., 1991) in Sydney, Australia and contains a cohort of 238 heroin addicts who entered maintenance programs between February 1986 and August 1987. The time in the clinic was determined by dates of entry into and exit or transfer from the methadone maintenance program to which they had been assigned. There are two further covariates, namely, prison record and methadone dose, believed to affect the survival times.
+
+The data set and R input code are on the website. The variables are as follows:
+
+\vspace{-0.3cm}
+- id: Subject ID
+- clinic: Clinic (1 or 2)
+- status: Survival status (1 = left the clinic, 0 = censored, i.e. we do not know when they left)
+- time: Survival time in days
+- prison: Prison record (0 = none, 1 = any)
+- methadone: Methadone dose (mg/day)
+
+\vspace{-0.3cm}
+Load the R packages and the dataset.
+```{r setting}
+library(survival)
+library(KMsurv)
+library(MASS)
+
+vars <- c("id","clinic","status","time","prison","methadone")
+addicts <- read.table("https://dmrocke.ucdavis.edu/Class/BST222.2023.Fall/addicts.txt",
+                      header=F, col.names=vars)
+
+#change variables to factors to be used in Cox PH
+addicts$clinic <- factor(addicts$clinic,labels=c("Clinic1","Clinic2"))
+addicts$prison <- factor(addicts$prison,labels=c("No","Yes"))
+
+head(addicts)
+
+# Create a survival object
+dfsurv <- Surv(addicts$time, addicts$status)
+```
+
+\newpage
+
+## 1. Fit the Cox model with clinics as strata, prison and methadone as variables.
+
+### 1.1. Separate Models.
+
+Let’s check each strata separately: separate by the clinic variable that has issues with proportionality and fit the same Cox model in each group.
+
+```{r}
+cox1 <- coxph(dfsurv ~ methadone + prison, data = addicts, sub = (clinic == 'Clinic1'))
+summary(cox1)
+cox2 <- coxph(dfsurv ~ methadone + prison, data = addicts, sub = (clinic == 'Clinic2'))
+summary(cox2)
+```
+
+The coefficients of methadone in the models are close, while the coefficients of prison look different. We want to test whether they are statistically different.
+
+### 1.2. Interaction Model.
+
+We can test the assumption of the same regression coefficients for each stratum by testing the interaction between the stratification variable and the covariates.
+
+```{r}
+inter.cox <- coxph(dfsurv ~ (methadone + prison) * strata(clinic), data = addicts)
+summary(inter.cox)
+```
+
+The coefficients of the interaction terms are not statistically significant at the significance level of 0.05, so we can assume that the coefficients are the same across strata.
+
+### 1.3. Stratified Model.
+
+```{r}
+cox <- coxph(dfsurv ~ strata(clinic) + methadone + prison, data = addicts)
+summary(cox)
+```
+
+Check for a difference between the interaction model and the stratified model.
+
+```{r}
+anova(cox, inter.cox, test = 'Chisq')
+```
+
+We get a p-value of 0.3948 which means that there is no significant difference between the stratified model with and without interaction terms. It shows that fitting interactions with the strata variable cannot improve the model (via the likelihood ratio test). We can conclude that the coefficients are not significantly different between the stratified models and the only difference is in the baseline hazard. So it is appropriate to use a stratified model with coefficients that are the same across strata.
+
+```{r, fig.align='center', out.width='65%'}
+plot(survfit(cox, data.frame(methadone = mean(addicts$methadone), prison = c('No', 'Yes'))),
+     col = c(1, 1, 2, 2), lty = c(1, 3, 1, 3), main = 'Stratified Cox Model')
+legend('topright',c('No+Clinic1', 'No+Clinic2', 'Yes+Clinic1', 'Yes+Clinic2'),
+       col = c(1, 1, 2, 2), lty = c(1, 3, 1, 3))
+```
+
+We can see that they are proportional within each strata, the two Clinic1 curves are proportional and the two Clinic2 curves are proportional. We will use this model for the remaining questions. Suppose the significance level is 0.05.
+
+## 2. Test proportionality of hazards.
+
+### 2.1. Use `cox.zph` to test PH assumption.
+```{r}
+addicts.zph <- cox.zph(cox)
+print(addicts.zph)
+```
+
+All the $p$-values in the `zph` table are larger than 0.05, so we can assume that these covariates meet the PH assumption. 
+
+### 2.2. Make the plots vs. time of the Schoenfeld residuals.
+
+There are two non-stratified covariates in the model, so we will have two plots.
+```{r zph, fig.align='center', out.width='65%'}
+plot(addicts.zph[1], main = 'Schoenfeld Residuals for Methadone')
+plot(addicts.zph[2], main = 'Schoenfeld Residuals for Prison')
+```
+
+The residuals for methadone and prison are roughly uncorrelated with time and the pattern of residuals vs time is nearly random, so we can assume that these covariates meet the PH assumption.
+
+Then have a quick look at their correlation with time.
+```{r, warning=FALSE}
+cor.spear <- function(x) {cor.test(x, addicts.zph$x, method = "spearman")}
+correlations <- apply(X = addicts.zph$y, MARGIN = 2, FUN = cor.spear); correlations
+```
+
+The $p$-values in the correlation test are all larger than 0.05, so we can assume that there's no time dependence.
+
+## 3. Plot the cumulative hazard of the Cox-Snell residuals.
+
+```{r csr, fig.align='center', out.width='65%'}
+addicts.mart <- residuals(cox, type = 'martingale')
+addicts.cs <- addicts$status - addicts.mart
+surv.csr <- survfit(Surv(addicts.cs, addicts$status) ~ 1, type = 'fleming-harrington')
+plot(surv.csr, fun = 'cumhaz', ylim = c(0, 5)); abline(0, 1)
+title('Cumulative Hazard of Cox-Snell Residuals')
+```
+
+The line with slope 1 and intercept 0 fits the curve relatively well, so we don’t see lack of goodness of fit based on these residuals.
+
+## 4. Examine the functional form of methadone.
+
+Plot the martingale residuals (omitting methadone) vs. methadone.
+```{r mres, fig.align='center', out.width='65%'}
+mres <- residuals(coxph(dfsurv ~ strata(clinic) + prison, data = addicts), type = 'martingale')
+plot(addicts$methadone, mres, xlab = 'Methadone', ylab = 'Martingale Residuals')
+lines(lowess(addicts$methadone, mres))
+title('Martingale Residuals vs. Methadone')
+```
+
+The slope of the line changes dramatically between methadone = 60 and 80. It suggests that some transformation of Methadone, e.g. treating it as a categorical variable, may help improve the goodness of fit. 
+
+## 5. Other model diagnostics.
+
+Plot the martingale residuals vs. the linear predictor.
+```{r mart, fig.align='center', out.width='65%'}
+addicts.preds <- predict(cox) # linear predictor
+plot(addicts.preds, addicts.mart, xlab = 'Linear Predictor', ylab = 'Martingale Residual')
+title('Martingale Residuals vs. Linear Predictor')
+addicts.mart[addicts.mart < - 2.2]
+```
+
+The smallest five martingale residuals in order are observations 8, 9, 12, 26 and 54. 
+
+Plot the deviance residuals vs. the linear predictor.
+```{r dev, fig.align='center', out.width='65%'}
+addicts.dev <- residuals(cox, type = 'deviance')
+plot(addicts.preds, addicts.dev, xlab = 'Linear Predictor', ylab = 'Deviance Residual')
+title('Deviance Residuals vs. Linear Predictor')
+addicts.dev[abs(addicts.dev) > 2.3]
+```
+
+The four largest absolute deviance residuals are observations 8, 123, 175 and 185.
+
+Plot the two dfbeta values by observation order.
+```{r dfbeta1, fig.align='center', out.width='65%'}
+addicts.dfb <- residuals(cox, type = 'dfbeta')
+plot(addicts.dfb[, 1], xlab = 'Observation Order', ylab = 'dfbeta for Methadone')
+title('dfbeta Values by Observation Order for Methadone')
+addicts.dfb[abs(addicts.dfb[, 1]) > 0.0014, 1]
+```
+
+The five largest absolute dfbetas for methadone are observations 9, 26, 70, 84 and 156.
+
+```{r dfbeta2, fig.align='center', out.width='65%'}
+plot(addicts.dfb[, 2], xlab = 'Observation Order', ylab = 'dfbeta for Prison')
+title('dfbeta Values by Observation Order for Prison')
+addicts.dfb[abs(addicts.dfb[, 2]) > 0.03, 2]
+```
+
+The four largest absolute dfbetas for prison are observations 8, 9, 12 and 26.
+\vspace{-0.2cm}
+
+\begin{center}
+Table: Observations to Examine by Residuals and Influence
+\end{center}
+
+\vspace{-0.6cm}
+
+| Model Diagnostics    | Observations          |
+| -------------------- | --------------------- |
+| Martingale Residuals | 8, 9, 12, 26, 54      |
+| Deviance Residuals   | 8, 123, 175, 185      |
+| Methadone Influence  | 9, 26, 70, 84, 156    |
+| Prison Influence     | 8, 9, 12, 26          |
+
+\vspace{-0.2cm}
+So the most important observations to examine seem to be 8, 9, 12 and 26.
+
+```{r}
+with(addicts, summary(time[status==1]))
+with(addicts, summary(methadone))
+with(addicts, summary(prison))
+addicts[c(8, 9, 12, 26), -1]
+```
+
+\vspace{-0.3cm}
+- 8: Clinic1, keeping staying in clinic, with prison record, median methadone doze.
+- 9: Clinic1, leaving clinic late, without prison record, low methadone doze.
+- 12: Clinic1, leaving clinic late, with prison record, median methadone doze.
+- 26: Clinic1, keeping staying in clinic, with prison record, low methadone doze.
+
+\vspace{-0.3cm}
+It turns out that nearly all the unusual observations are from Clinic 1, have features of leaving the clinic late or not leaving, having at least one prison record and methadone doze below average. But this can actually happen in real case.
+
