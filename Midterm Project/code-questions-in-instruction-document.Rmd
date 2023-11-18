@@ -1,0 +1,400 @@
+---
+title: "BST 222 - Midterm Assignment Codes"
+author: "Xiaowei Zeng"
+date: "`r Sys.Date()`"
+output: pdf_document
+# fontsize: 11pt
+#output: 
+#  pdf_document:
+#    number_sections: true
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', out.width='65%')
+```
+
+# Here are the codes for problems in the instruction document of Midterm Project, not the codes for the report!
+
+## Preparation
+Load the R packages and the dataset.
+```{r}
+library(KMsurv)
+library(survival)
+
+data(burn)
+# set variable s to factors
+burn0 <- data.frame(
+  Obs=burn$Obs,
+  T1=burn$T1,
+  D1=burn$D1,
+  T2=burn$T2,
+  D2=burn$D2,
+  T3=burn$T3,
+  D3=burn$D3,
+  Treatment=factor(burn$Z1,labels=c("Routine","Cleansing")),
+  Gender=factor(burn$Z2,labels=c("Male","Female")),
+  Race=factor(burn$Z3,labels=c("Nonwhite","White")),
+  PercentBurn=burn$Z4, 
+  SiteHead=factor(burn$Z5,labels=c("NotBurned","Burned")),
+  SiteButtock=factor(burn$Z6,labels=c("NotBurned","Burned")),
+  SiteTrunk=factor(burn$Z7,labels=c("NotBurned","Burned")),
+  SiteUpperLeg=factor(burn$Z8,labels=c("NotBurned","Burned")),
+  SiteLowerLeg=factor(burn$Z9,labels=c("NotBurned","Burned")),
+  SiteRespTract=factor(burn$Z10,labels=c("NotBurned","Burned")),
+  BurnSource=factor(burn$Z11,labels=c("Chemical","Scald","Electric","Flame"))
+)
+burn <- tmerge(burn0, burn0, Obs, tstop=T3)
+# set time to excision
+burn <- tmerge(burn, burn0, Obs, excis=tdc(T1))
+# set time to antibiotics
+burn <- tmerge(burn, burn0, Obs, antib=tdc(T2))
+# status at the end, either they had an infection or they were censored
+burn$status <- as.integer(with(burn, (tstop == T3 & D3)))
+# preview the data
+head(burn)
+```
+
+Create a survival object with time independent covariates.
+```{r}
+surv1 <- Surv(burn0$T3, burn0$D3)
+```
+
+Create a survival object with time dependent covariates.
+```{r}
+surv2 <- Surv(time=burn$tstart, time2=burn$tstop,
+              event=burn$status, type="counting")
+```
+
+Suppose that the significance level in this study is 0.1.
+
+## 1. 
+
+Plot the Kaplan-Meier curves for the treated and untreated patients.
+```{r}
+KMcurves <- survfit(surv1~Treatment, data=burn0)
+plot(KMcurves, col=1:2, xlab="Time (Days)", ylab="Survival", lwd=2)
+legend("topright", c("Routine Care","Total Body Cleansing"), col=1:2, lwd=2)
+title('KM Survival Curves with Treatment')
+```
+
+Use `survdiff` to test for whether the curves are different.
+```{r}
+survdiff(surv1~Treatment, data=burn0)
+```
+
+The $p$-value of the log rank test is 0.05<0.1, indicating that the curves are significantly different.
+
+## 2. 
+Plot the cumulative hazards vs. time.
+```{r}
+NAcurves <- survfit(surv1~Treatment, type="fleming-harrington", data=burn0)
+plot(NAcurves, col=1:2, fun="cumhaz", xlab="Time (Days)",
+     ylab="Cumulative Hazards", lwd=2)
+legend("topleft", c("Routine Care","Total Body Cleansing"), col=1:2, lwd=2)
+title('NA Cumulative Hazards Curves with Treatment')
+```
+
+The cumulative hazards of Cleansing group are larger than those with routine bathing for nearly all time points (except the first several days).
+
+Plot the complimentary log-log survival vs. log time.
+```{r}
+plot(NAcurves, col=1:2, fun="cloglog", xlab="Time (Days in log scale)", ylab="Log(Cumulative Hazards)", lwd=2)
+legend("topleft", c("Routine Care","Total Body Cleansing"), col=1:2, lwd=2)
+title('Complimentary Log-Log Survival Curves')
+```
+
+The two lines are roughly parallel, so we can assume that the hazards are proportional.
+
+## 3.
+
+Construct Cox model using only the time-independent predictors. Start with one using only Treatment. 
+
+```{r}
+cox1 <- coxph(surv1~Treatment, data=burn0)
+summary(cox1)
+```
+
+Include all the time independent variables in the initial model. Use stepwise model selection method to decide which varaibles should be included in the model. 
+
+```{r}
+cox2 <- coxph(surv1~Treatment+Gender+Race+PercentBurn+SiteHead+SiteButtock+SiteTrunk+
+                SiteUpperLeg+SiteLowerLeg+SiteRespTract+BurnSource, data=burn0)
+step(cox2)
+```
+
+All the burn site variables are excluded from the model. None of them show a significant effect on infection risk. The final model with time independent variables should be fit with Treatment, Gender, Race and BurnSource variable.
+
+```{r}
+cox3 <- coxph(surv1~Treatment+Gender+Race+BurnSource, data=burn0)
+summary(cox3)
+```
+
+## 4. 
+
+Run the usual suite of model checking methods and report any interesting findings. Possibly alter the model as a result.
+
+1. Use `cox.zph` to test PH assumption.
+```{r}
+burn0.zph <- cox.zph(cox3)
+print(burn0.zph)
+```
+
+The BurnSource variable has a $p$-value of 0.038<0.1 and the $p$-value for the global test is 0.04<0.1. Thus, it does not satisfy proportionality of hazards assumption.
+
+2. Make the plots vs. time of the Schoenfeld residuals.
+
+```{r }
+plot(burn0.zph[1], main = 'Schoenfeld Residuals for Treatment')
+plot(burn0.zph[2], main = 'Schoenfeld Residuals for Gender')
+plot(burn0.zph[3], main = 'Schoenfeld Residuals for Race')
+plot(burn0.zph[4], main = 'Schoenfeld Residuals for BurnSource')
+```
+
+Have a look at the patterns of variables vs. time. Severe time dependence!
+
+Plot the KM curve for the event of infection and BurnSource. It shows a significant intersection between the flame curve and the scald curve. We need to employ stratification.
+```{r, message=FALSE}
+library(survminer)
+ggsurvplot(survfit(surv1~BurnSource, data=burn0))
+```
+
+First test whether we can use strata (whether thes coefficient of other variables are the same across strata). I fit seperate models, but it cannot converge because the sample size for each source of burn is not balanced.
+```{r}
+table(burn0$BurnSource)
+```
+
+I turn to fit an interaction model and find that all the variables are not significant. We can simply assume that the coefficients are the same across strata.
+```{r}
+inter.cox <- coxph(surv1~(Treatment+Gender+Race)*strata(BurnSource), data=burn0)
+summary(inter.cox)
+```
+
+Construct a new stratified model. Without time-dependent variable, this is the final model. 
+```{r}
+cox4 <- coxph(surv1~Treatment+Gender+Race+strata(BurnSource), data=burn0)
+summary(cox4)
+```
+
+Plot the stratified model.
+```{r}
+plot(survfit(cox4, data.frame(Treatment=levels(burn0$Treatment),
+                              Gender=levels(burn0$Gender)[1],
+                              Race=levels(burn0$Race)[1])), 
+     col=1:4, main = 'Stratified Cox Model', ylim=c(0.8, 1))
+```
+
+1. Use `cox.zph` to test PH assumption.
+```{r}
+burn0.zph <- cox.zph(cox4)
+print(burn0.zph)
+```
+
+The model satisfies PH assumption now because the $p$-value for the global model is 0.192>0.1.
+
+2. Make the plots vs. time of the Schoenfeld residuals.
+```{r }
+plot(burn0.zph[1], main = 'Schoenfeld Residuals for Treatment')
+plot(burn0.zph[2], main = 'Schoenfeld Residuals for Gender')
+plot(burn0.zph[3], main = 'Schoenfeld Residuals for Race')
+```
+
+Still strong time dependece.
+
+3. Plot the cumulative hazard of the Cox-Snell residuals.
+```{r}
+burn0.mart <- residuals(cox4, type='martingale')
+burn0.cs <- burn0$D3 - burn0.mart
+surv.csr <- survfit(Surv(burn0.cs, burn0$D3) ~ 1, type='fleming-harrington')
+plot(surv.csr, fun='cumhaz', ylim=c(0, 3)); abline(0, 1)
+title('Cumulative Hazard of Cox-Snell Residuals')
+```
+
+The line with slope 1 and intercept 0 does not fit the curve well. There may be a lack of fit of goodness in this model.
+
+4. Plot the martingale residuals vs. the linear predictor.
+```{r}
+burn0.preds <- predict(cox4) # linear predictor
+plot(burn0.preds, burn0.mart, xlab='Linear Predictor', ylab='Martingale Residual')
+title('Martingale Residuals vs. Linear Predictor')
+burn0.mart[burn0.mart < - 1]
+```
+
+5. Plot the deviance residuals vs. the linear predictor.
+```{r}
+burn0.dev <- residuals(cox4, type='deviance') 
+plot(burn0.preds, burn0.dev, xlab='Linear Predictor', ylab='Deviance Residual')
+title('Deviance Residuals vs. Linear Predictor')
+burn0.dev[burn0.dev > 2]
+```
+
+6. Plot the three dfbeta values by observation order.
+```{r}
+burn0.dfb <- residuals(cox4, type='dfbeta')
+plot(burn0.dfb[, 1], xlab='Observation Order', ylab='dfbeta for Treatment')
+title('dfbeta Values by Observation Order for Treatment')
+burn0.dfb[abs(burn0.dfb[, 1]) > 0.05, 1]
+```
+
+```{r}
+plot(burn0.dfb[, 2], xlab='Observation Order', ylab='dfbeta for Gender')
+title('dfbeta Values by Observation Order for Gender')
+burn0.dfb[abs(burn0.dfb[, 2]) > 0.1, 2]
+```
+
+```{r}
+plot(burn0.dfb[, 3], xlab='Observation Order', ylab='dfbeta for Race')
+title('dfbeta Values by Observation Order for Race')
+burn0.dfb[abs(burn0.dfb[, 3]) > 0.2, 3]
+```
+
+The most important observations to examine should be 32, 79, 90, 115, 116, and 153.
+
+```{r}
+burn0[c(32, 79, 90, 115, 116, 153), ]
+```
+
+- 32: This patient experienced an electric burn both on the head and trunk, indicating a relatively severe burn condition. However, despite not receiving interventions such as body cleansing, surgical excision, or antibiotic treatment, the patient remained infection-free until exiting the study. It is essential to acknowledge that this could be attributed to either his early withdrawal from the study or the early ending of the study.
+- 79: This patient belongs to the intervention group and is a female, representing the smaller proportion of females in the overall sample. Additionally, she has a relatively small burned percentage of total surface area. Previous models show that the intervention group has a lower risk of infection compared to the control group, and females, although not statistically significant, tend to have a lower risk as well. However, in her case, she rapidly developed an infection on the second day of entering the study.
+- 90: This patient belongs to the intervention group and is a female, representing the smaller proportion of females in the overall sample. She suffered from chemical burn, underwent both surgical excision and antibiotics treatment, but she still got infected relatively early.
+- 115: This patient is from the intervention group and rapidly got infected on the third day of entering the study. Considering that the patient has burns in four locations, with a burn percentage of surface area accounting for 50\%, this doesn't appear to be particularly unusual.
+- 116: This patient is the only one in the nonwhite group who is infected, and therefore, it will have a significant negative impact on the coefficient of the Race variable.
+- 153: Despite being in the intervention group and having a very low burn percentage, this patient rapidly developed an infection on the second day after entering the study.
+
+The majority of these outliers are detected due to unexpectedly early infections. They exhibit characteristics associated with lower infection risk, such as being in the intervention group, having a small burn percentage, and undergoing excision or antibiotic treatment. Despite these factors, they still experienced infections just a few days after entering the study. 
+
+## 5.
+
+Add time-dependent variables into the model and use stepwise method to conduct model selection just the same as before.
+```{r}
+cox5 <- coxph(surv2~Treatment+Gender+Race+PercentBurn+SiteHead+SiteButtock+SiteTrunk+
+                SiteUpperLeg+SiteLowerLeg+SiteRespTract+BurnSource+excis+antib, data=burn)
+step(cox5)
+```
+
+The best model with the lowest AIC has Treatment, Race, BurnSource and excis (time-dependent) as the covariates.
+```{r}
+cox6 <- coxph(surv2~Treatment+Race+BurnSource+excis, data=burn)
+summary(cox6)
+```
+
+## 6.
+
+Run the usual suite of model checking methods and report any interesting findings. Possibly alter the model as a result.
+
+1. Use `cox.zph` to test PH assumption.
+```{r}
+burn.zph <- cox.zph(cox6)
+print(burn.zph)
+```
+
+The BurnSource variable has a $p$-value of 0.035<0.1 and the $p$-value for the global test is 0.051<0.1. Thus, it does not satisfy proportionality of hazards assumption.
+
+2. Make the plots vs. time of the Schoenfeld residuals.
+
+```{r }
+plot(burn.zph[1], main = 'Schoenfeld Residuals for Treatment')
+plot(burn.zph[2], main = 'Schoenfeld Residuals for Race')
+plot(burn.zph[3], main = 'Schoenfeld Residuals for BurnSource')
+plot(burn.zph[4], main = 'Schoenfeld Residuals for Excision')
+```
+
+We need to employ stratification. First test whether we can use strata (whether thes coefficient of other variables are the same across strata). I fit seperate models, but it cannot converge because the sample size for each source of burn is not balanced. I turn to fit an interaction model and find that all the variables are not significant. We can simply assume that the coefficients are the same across strata.
+```{r}
+inter.cox <- coxph(surv2~(Treatment+Race+excis)*strata(BurnSource), data=burn)
+summary(inter.cox)
+```
+
+Construct a new stratified model. This is the final model including time-dependent variable.
+```{r}
+cox7 <- coxph(surv2~Treatment+Race+excis+strata(BurnSource), data=burn)
+summary(cox7)
+```
+
+Plot the stratified model.
+```{r}
+plot(survfit(cox7, data.frame(Treatment=levels(burn$Treatment),
+                              Race=levels(burn$Race)[1], 
+                              excis=1)), 
+     col=1:4, main = 'Stratified Cox Model', ylim=c(0.85, 1))
+```
+
+1. Use `cox.zph` to test PH assumption.
+```{r}
+burn.zph <- cox.zph(cox7)
+print(burn.zph)
+```
+
+The model satisfies PH assumption now because the $p$-value for the global model is 0.288>0.1.
+
+2. Make the plots vs. time of the Schoenfeld residuals.
+```{r }
+plot(burn.zph[1], main = 'Schoenfeld Residuals for Treatment')
+plot(burn.zph[2], main = 'Schoenfeld Residuals for Race')
+plot(burn.zph[3], main = 'Schoenfeld Residuals for Excision')
+```
+
+Patterns with time still exists.
+
+3. Plot the cumulative hazard of the Cox-Snell residuals.
+```{r}
+burn.mart <- residuals(cox7, type='martingale')
+burn.cs <- burn$status - burn.mart
+surv.csr <- survfit(Surv(burn.cs, burn$status) ~ 1, type='fleming-harrington')
+plot(surv.csr, fun='cumhaz', ylim=c(0, 2)); abline(0, 1)
+title('Cumulative Hazard of Cox-Snell Residuals')
+```
+
+The line with slope 1 and intercept 0 fits the curve relatively well, so we don’t see lack of fit based on these residuals. This model is much better than the Model 4.
+
+4. Plot the martingale residuals vs. the linear predictor.
+```{r}
+burn.preds <- predict(cox7) # linear predictor
+plot(burn.preds, burn.mart, xlab='Linear Predictor', ylab='Martingale Residual')
+title('Martingale Residuals vs. Linear Predictor')
+burn$Obs[burn.mart < - 1]
+```
+
+5. Plot the deviance residuals vs. the linear predictor.
+```{r}
+burn.dev <- residuals(cox7, type='deviance') 
+plot(burn.preds, burn.dev, xlab='Linear Predictor', ylab='Deviance Residual')
+title('Deviance Residuals vs. Linear Predictor')
+burn$Obs[burn.dev > 2]
+```
+
+6. Plot the three dfbeta values by observation order.
+```{r}
+burn.dfb <- residuals(cox7, type='dfbeta')
+plot(burn.dfb[, 1], xlab='Observation Order', ylab='dfbeta for Treatment')
+title('dfbeta Values by Observation Order for Treatment')
+burn$Obs[abs(burn.dfb[, 1]) > 0.05]
+```
+
+```{r}
+plot(burn.dfb[, 2], xlab='Observation Order', ylab='dfbeta for Race')
+title('dfbeta Values by Observation Order for Race')
+burn$Obs[abs(burn.dfb[, 2]) > 1]
+```
+
+```{r}
+plot(burn.dfb[, 3], xlab='Observation Order', ylab='dfbeta for Excision')
+title('dfbeta Values by Observation Order for Excision')
+burn$Obs[abs(burn.dfb[, 3]) > 0.1]
+```
+
+The most important observations to examine should be 32, 79, 90, 115, 116, and 153.
+
+```{r}
+burn0[c(32, 79, 115, 116, 125, 153), ]
+```
+
+- 32: This patient experienced an electric burn both on the head and trunk, indicating a relatively severe burn condition. However, despite not receiving interventions such as body cleansing, surgical excision, or antibiotic treatment, the patient remained infection-free until exiting the study. It is essential to acknowledge that this could be attributed to either his early withdrawal from the study or the early ending of the study.
+- 79: This patient belongs to the intervention group and is a female, representing the smaller proportion of females in the overall sample. Additionally, she has a relatively small burned percentage of total surface area. Previous models show that the intervention group has a lower risk of infection compared to the control group, and females, although not statistically significant, tend to have a lower risk as well. However, in her case, she rapidly developed an infection on the second day of entering the study.
+- 115: This patient is from the intervention group and rapidly got infected on the third day of entering the study. Considering that the patient has burns in four locations, with a burn percentage of surface area accounting for 50\%, this doesn't appear to be particularly unusual.
+- 116: This patient is the only one in the nonwhite group who is infected, and therefore, it will have a significant negative impact on the coefficient of the Race variable.
+- 125: Despite being in the intervention group, having a relatively low burn percentage, and receiving antibiotic treatment before infection, this patient rapidly developed an infection on the third day after entering the study.
+- 153: Despite being in the intervention group and having a very low burn percentage, this patient rapidly developed an infection on the second day after entering the study.
+
+The majority of these outliers are detected due to unexpectedly early infections. They exhibit characteristics associated with lower infection risk, such as being in the intervention group, having a small burn percentage, and undergoing excision or antibiotic treatment. Despite these factors, they still experienced infections just a few days after entering the study. 
+
