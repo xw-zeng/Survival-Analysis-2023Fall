@@ -18,7 +18,7 @@
 
 - **plot_zph.R**
 
-  A customized function to use `ggplot2 ` package to plot the Schoenfeld residuals.
+  A customized function to use `ggplot2` package to plot the Schoenfeld residuals.
 
 - **geom_stepribbon.R**
 
