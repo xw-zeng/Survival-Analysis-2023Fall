@@ -1,0 +1,655 @@
+---
+title: "Cox PH Model"
+author: "Kuang Li"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+
+```{r}
+library(survival)
+library(survminer)
+library(ggplot2)
+library(sqldf)
+library(glmnet)
+library(MASS)
+library(EnvStats)
+library(pander)
+library(MASS)
+library(car)
+
+#detect null value
+null_detection <- function(x) {
+  null <- colSums(is.na(x))
+  return(null)
+}
+#check distribution
+distribution_plot <- function(df, x) {
+  par(mfrow = c(2,2))
+  #histogram
+  hist(df[[x]], main = paste("Histogram of", x))
+  #qq plot
+  qqnorm(df[[x]], main = paste("Custom QQ Plot Title: ", x))
+  qqline(df[[x]])
+  #boxplot
+  boxplot(df[[x]], main = paste("Boxplot of", x))
+  par(mfrow = c(1, 1))
+}
+
+```
+
+
+```{r}
+source("data_loading.R")
+head(data)
+```
+
+
+```{r}
+fac_var <- c('wghist', 'employ', 'race', 'gender', 'edu',
+             'pedu', 'religion', 'live', 'marriage', 'insur_gov', 'insur_com', 'self_health', 'smoke')
+for (i in fac_var) {
+  data[[i]] <- as.factor(data[[i]])
+}
+```
+
+```{r}
+data2 <- data %>%
+  dplyr::select(-c("hhidpn" ,"wave_num", "wealth", "prop_pt"))
+# data2$age <- as.numeric(data2$age)
+
+#check distribution
+head(data2)
+data2_num <- data2 %>%
+  dplyr::select(c('bmi'))
+
+for (i in names(data2_num)) {
+  distribution_plot(data2_num, i)
+}
+
+#log transformation
+# data2$age <- log(data2$age)
+
+
+# hist(data2$age)
+od1 <- c(1:3024)
+data2$order <- od1
+
+```
+
+
+```{r}
+KMcruves_wage <- survfit(Surv(event, status) ~ wghist, data = data2)
+#plot KM curves
+plot(KMcruves_wage, col = 1:3, lwd = 2,
+     xlab = "Time (Years)", ylab = "Survival")
+title("KM Survival Curves for 3 types of low wage history level")
+legend("bottomright",legend = levels(data2$wghist), col=1:3, lwd=2)
+
+```
+
+perform elastic net regression as feature selection
+```{r}
+# Assuming 'time' is the survival time and 'status' is the event indicator
+surv_object <- Surv(data2$event, data2$status)
+x <- model.matrix(~ . - event - status - order, data=data2)  # -1 to exclude the intercept
+set.seed(123)  # Set a seed for reproducibility
+cv_fit <- cv.glmnet(x, surv_object, alpha=1, family="cox")  # Alpha=1
+best_lambda <- cv_fit$lambda.1se  # Lambda that minimizes the cross-validation error
+final_model <- glmnet(x, surv_object, alpha=1, lambda=best_lambda, family="cox")
+lasso_coefs <- coef(final_model, s=best_lambda)
+lasso_coefs
+```
+
+put lasso variables into cox
+```{r}
+lasso_cox <- coxph(surv_object ~ wghist + age + race + pedu + live +
+                     insur_gov + self_health + smoke - event - status, data = data2)
+
+pander(summary(lasso_cox))
+BIC(lasso_cox)
+vif(lasso_cox)
+```
+
+Schoenfeld Residual
+```{r}
+lasso.zph <- cox.zph(lasso_cox)
+source("plot_zph.R")
+library(patchwork)
+library(gridExtra)
+plots <- lapply(1:8, function(i) {plot_zph(lasso.zph[i],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]]})
+
+p = plot_zph(lasso.zph[1],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  plot_zph(lasso.zph[2],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  plot_zph(lasso.zph[3],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  plot_zph(lasso.zph[4],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  plot_zph(lasso.zph[5],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  plot_zph(lasso.zph[7],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  plot_zph(lasso.zph[8],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  plot_zph(lasso.zph[6],
+         ggtheme=theme_bw(),
+         point.col=mypalette[2],
+         line.col=mypalette[1])[[1]] + 
+  p10
+
+plots[[9]] = p10
+
+grid.arrange(plots, nrow=3)
+
+print(lasso.zph)
+
+plot(lasso.zph[1], 
+     main = "Schoenfeld Residuals for low wage history Type")
+plot(lasso.zph[2], 
+     main = "Schoenfeld Residuals for age")
+plot(lasso.zph[3], 
+     main = "Schoenfeld Residuals for race")
+plot(lasso.zph[4], 
+     main = "Schoenfeld Residuals for pedu")
+plot(lasso.zph[5], 
+     main = "Schoenfeld Residuals for live")
+plot(lasso.zph[6], 
+     main = "Schoenfeld Residuals for insur_gov")
+plot(lasso.zph[7], 
+     main = "Schoenfeld Residuals for self_health")
+plot(lasso.zph[8], 
+     main = "Schoenfeld Residuals for smoke")
+
+```
+
+```{r}
+lassoCox.mart <- residuals(lasso_cox, type = "martingale")
+lassoCox.cs <- data2$status - lassoCox.mart
+
+#cumulative hazard of CS residuals
+surv.csr <- survfit(Surv(lassoCox.cs,data2$status)~1,type="fleming-harrington")
+plot(surv.csr, fun = "cumhaz")
+abline(0,1)
+title("Cumulative Hazard of Cox-Snell Residuals")
+```
+
+```{r}
+lassoCox.mart <- residuals(lasso_cox, type = "martingale")
+lassoCox.cs <- data2$status - lassoCox.mart
+surv.csr <- survfit(Surv(lassoCox.cs, data2$status)~1,type="fleming-harrington")
+p1 <- ggsurvplot(surv.csr,
+           data=data,
+           fun="cumhaz",
+           censor=F,
+           conf.int=T,
+           # conf.int.fill=mypalette[1],
+           ggtheme=theme_bw(),
+           palette=mypalette[1],
+           subtitle="Cumulative Hazard of Cox-Snell Residuals", 
+           ylab="CumHaz of Cox-Snell Residual",
+           #xlim=c(0, 1.5),
+           #ylim=c(0, 1.2),
+           axes.offset=F,
+           legend="none")
+p.csr <- p1$plot + geom_abline(slope=1,
+                               intercept = 0,
+                               color=mypalette[2],
+                               linewidth=1.2,
+                               linetype="dashed")
+```
+
+```{r}
+p.mart <- ggcoxdiagnostics(lasso_cox,
+                           facet=F,
+                           type="martingale",
+                           point.col=mypalette[2],
+                           sline.lty=1, 
+                           sline.col=mypalette[1],
+                           hline=F,
+                           point.size=1.2,
+                           sline.se.col=mypalette[2],
+                           ggtheme=theme_bw(),
+                           ylab="Martingale Residual",
+                           xlab="Linear Predictor",
+                           subtitle = "Martingale Residuals vs. Linear Predictor") + facet_null()
+p.dev <- ggcoxdiagnostics(lasso_cox,
+                          type="deviance",
+                          point.col=mypalette[2],
+                          sline.lty=1, 
+                          sline.col=mypalette[1],
+                          hline=F,
+                          point.size=1.2,
+                          sline.se.col=mypalette[2],
+                          ggtheme=theme_bw(),
+                          ylab="Deviance Residual",
+                          xlab="Linear Predictor",
+                          subtitle = "Deviance Residuals vs. Linear Predictor") + facet_null()
+p = .csr + p.mart + p.dev
+ggsave("p2.png", p, width = 14, height = 3)
+```
+
+
+
+```{r}
+#fit residuals: martingale, deviance, and df beta
+lassoCox.mart <- residuals(lasso_cox, type = "martingale")
+lassoCox.dev <- residuals(lasso_cox,type="deviance")
+lassoCox.dfb <- residuals(lasso_cox,type="dfbeta")
+
+#find linear predictor
+lassoCox.preds <- predict(lasso_cox)
+
+#plot Martingale vs Linear Predictor
+plot(lassoCox.preds, lassoCox.mart, 
+     xlab = "linear predictor", ylab = "Martingale Residual",
+     ylim = c(-3,2), pch = 19, cex = 0.5)
+text(lassoCox.preds, lassoCox.mart, labels = data2$order)
+title("Martingale Residuals vs. Linear Predictor")
+
+
+
+#plot Deviance vs Linear Predictor
+plot(lassoCox.preds, lassoCox.dev, 
+     xlab = "linear predictor", ylab = "Deviance Residual",
+     ylim = c(-3,3), pch = 19, cex = 0.5)
+text(lassoCox.preds, lassoCox.dev, labels = data2$order)
+title("Deviance Residuals vs. Linear Predictor")
+```
+
+```{r}
+unusual <- c(118)
+data2[unusual, ]
+```
+
+```{r}
+p.dfbeta <- ggcoxdiagnostics(lasso_cox,
+                             type="dfbeta",
+                             point.col=mypalette[2],
+                             sline.lty=1, 
+                             sline.col=mypalette[1],
+                             hline=F,
+                             point.size=1.2,
+                             sline.se.col=mypalette[2],
+                             ggtheme=theme_bw(),
+                             ylab="Dfbetas",
+                             xlab="Observation Order") +
+  theme(strip.background = element_blank())
+
+ggsave("p3.png", p.dfbeta, width = 14, height = 9)
+```
+
+
+```{r}
+plot1A <- function() {
+  plot(lassoCox.dfb[,1], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,1], labels = data2$order)
+  title("dfbeta Values for Wage Intermittent Type")
+}
+
+plot1A()
+
+plot2A <- function() {
+  plot(lassoCox.dfb[,2], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,2], labels = data2$order)
+  title("dfbeta Values for Wage Sustained Type")
+}
+
+plot2A()
+
+plot3A <- function() {
+  plot(lassoCox.dfb[,3], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,3], labels = data2$order)
+  title("dfbeta Values for Age Type")
+}
+
+plot3A()
+
+plot4A <- function() {
+  plot(lassoCox.dfb[,4], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,4], labels = data2$order)
+  title("dfbeta Values for Race Hispan Type")
+}
+
+plot4A()
+
+plot5A <- function() {
+  plot(lassoCox.dfb[,5], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,5], labels = data2$order)
+  title("dfbeta Values for Race Black Type")
+}
+
+plot5A()
+
+plot6A <- function() {
+  plot(lassoCox.dfb[,6], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,6], labels = data2$order)
+  title("dfbeta Values for Race Other Type")
+}
+
+plot6A()
+
+plot7A <- function() {
+  plot(lassoCox.dfb[,7], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,7], labels = data2$order)
+  title("dfbeta Values for Pedu >= 12 yrs Type")
+}
+
+plot7A()
+
+
+plot8A <- function() {
+  plot(lassoCox.dfb[,8], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,8], labels = data2$order)
+  title("dfbeta Values for Live MidWest Type")
+}
+
+plot8A()
+
+
+plot9A <- function() {
+  plot(lassoCox.dfb[,9], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,9], labels = data2$order)
+  title("dfbeta Values for Live Move Type")
+}
+
+plot9A()
+
+
+plot10A <- function() {
+  plot(lassoCox.dfb[,10], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,10], labels = data2$order)
+  title("dfbeta Values for Live South Type")
+}
+
+plot10A()
+
+
+plot11A <- function() {
+  plot(lassoCox.dfb[,11], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,11], labels = data2$order)
+  title("dfbeta Values for Live West Type")
+}
+
+plot11A()
+
+
+plot12A <- function() {
+  plot(lassoCox.dfb[,12], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,12], labels = data2$order)
+  title("dfbeta Values for Insurance Gov Always Type")
+}
+
+plot12A()
+
+plot13A <- function() {
+  plot(lassoCox.dfb[,13], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,13], labels = data2$order)
+  title("dfbeta Values for Insurance Gov Sometimes Type")
+}
+
+plot13A()
+
+plot14A <- function() {
+  plot(lassoCox.dfb[,14], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,14], labels = data2$order)
+  title("dfbeta Values for Self Health Fair/Poor Type")
+}
+
+plot14A()
+
+plot15A <- function() {
+  plot(lassoCox.dfb[,15], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(lassoCox.dfb[,15], labels =data2$order)
+  title("dfbeta Values for Smoke Ever Type")
+}
+
+plot15A()
+```
+
+
+
+```{r}
+
+```
+
+
+
+
+stepwise regression
+```{r}
+full_model1 <- coxph(surv_object ~ . - event - status, data = data2)
+summary(full_model1)
+
+step_model1 <- step(full_model1, direction = "both",
+                       scope = list(upper = ~ .,lower = ~ wghist),
+                       criterion = "BIC")
+pander(summary(step_model1))
+```
+```{r}
+step.zph <- cox.zph(step_model1)
+print(step.zph)
+
+plot(step.zph[1], 
+     main = "Schoenfeld Residuals for wage Type")
+plot(step.zph[2], 
+     main = "Schoenfeld Residuals for age")
+plot(step.zph[3], 
+     main = "Schoenfeld Residuals for race")
+plot(step.zph[4], 
+     main = "Schoenfeld Residuals for pedu")
+plot(step.zph[5], 
+     main = "Schoenfeld Residuals for insur_gov")
+plot(step.zph[6], 
+     main = "Schoenfeld Residuals for self_health")
+plot(step.zph[7], 
+     main = "Schoenfeld Residuals for smoke")
+
+```
+
+```{r}
+stepcox.mart <- residuals(step_model1, type = "martingale")
+stepcox.cs <- data2$status - stepcox.mart
+
+#cumulative hazard of CS residuals
+surv.csr <- survfit(Surv(stepcox.cs,data2$status)~1,type="fleming-harrington")
+plot(surv.csr, fun = "cumhaz")
+abline(0,1)
+title("Cumulative Hazard of Cox-Snell Residuals")
+```
+
+
+```{r}
+#fit residuals: martingale, deviance, and df beta
+stepcox.mart <- residuals(step_model1, type = "martingale")
+stepcox.dev <- residuals(step_model1,type="deviance")
+stepcox.dfb <- residuals(step_model1,type="dfbeta")
+
+#find linear predictor
+stepcox.preds <- predict(step_model1)
+
+#plot Martingale vs Linear Predictor
+plot(stepcox.preds, stepcox.mart, 
+     xlab = "linear predictor", ylab = "Martingale Residual",
+     ylim = c(-3,2), pch = 19, cex = 0.5)
+text(stepcox.preds, stepcox.mart, labels = data2$order)
+title("Martingale Residuals vs. Linear Predictor")
+
+
+
+#plot Deviance vs Linear Predictor
+plot(stepcox.preds, stepcox.dev, 
+     xlab = "linear predictor", ylab = "Deviance Residual",
+     ylim = c(-3,3), pch = 19, cex = 0.5)
+text(stepcox.preds, stepcox.dev, labels = data2$order)
+title("Deviance Residuals vs. Linear Predictor")
+```
+
+```{r}
+plot1A <- function() {
+  plot(stepcox.dfb[,1], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,1], labels = data2$order)
+  title("dfbeta Values for Wage Intermittent Type")
+}
+
+plot1A()
+
+plot2A <- function() {
+  plot(stepcox.dfb[,2], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,2], labels = data2$order)
+  title("dfbeta Values for Wage Sustained Type")
+}
+
+plot2A()
+
+plot3A <- function() {
+  plot(stepcox.dfb[,3], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,3], labels = data2$order)
+  title("dfbeta Values for Age Type")
+}
+
+plot3A()
+
+plot4A <- function() {
+  plot(stepcox.dfb[,4], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,4], labels = data2$order)
+  title("dfbeta Values for Race Hispan Type")
+}
+
+plot4A()
+
+plot5A <- function() {
+  plot(stepcox.dfb[,5], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,5], labels = data2$order)
+  title("dfbeta Values for Race Black Type")
+}
+
+plot5A()
+
+plot6A <- function() {
+  plot(stepcox.dfb[,6], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,6], labels = data2$order)
+  title("dfbeta Values for Race Other Type")
+}
+
+plot6A()
+
+plot7A <- function() {
+  plot(stepcox.dfb[,7], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,7], labels = data2$order)
+  title("dfbeta Values for Pedu >= 12 yrs Type")
+}
+
+plot7A()
+
+
+
+
+plot8A <- function() {
+  plot(stepcox.dfb[,8], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,8], labels = data2$order)
+  title("dfbeta Values for Insurance Gov Always Type")
+}
+
+plot8A()
+
+plot9A <- function() {
+  plot(stepcox.dfb[,9], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,9], labels = data2$order)
+  title("dfbeta Values for Insurance Gov Sometimes Type")
+}
+
+plot9A()
+
+plot10A <- function() {
+  plot(stepcox.dfb[,10], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,10], labels = data2$order)
+  title("dfbeta Values for Self Health Fair/Poor Type")
+}
+
+plot10A()
+
+plot11A <- function() {
+  plot(stepcox.dfb[,11], xlab = "Observation Number",
+     ylab = "dfbeta for Treatment Type",pch = 19, cex = 0.5)
+  text(stepcox.dfb[,11], labels = data2$order)
+  title("dfbeta Values for Smoke Ever Type")
+}
+
+plot11A()
+```
+
+```{r}
+
+
+data2[data2$order == 2560, ]
+data2[data2$order == 1744, ]
+data2[data2$order == 168, ]
+data2[data2$order == 1356, ]
+data2[data2$order == 27, ]
+data2[data2$order == 55, ]
+data2[data2$order == 153, ]
+data2[data2$order == 912, ]
+
+rbind(
+  data2[data2$order == 2560, ],
+data2[data2$order == 1744, ],
+data2[data2$order == 168, ],
+data2[data2$order == 1356, ],
+data2[data2$order == 27, ],
+data2[data2$order == 55, ],
+data2[data2$order == 153, ],
+data2[data2$order == 912, ]
+)
+
+# Vector of order values to filter
+order_values <- c(2560, 1744, 168, 1356, 27, 55, 153, 912)
+
+# Filter data2 for those order values and combine them into one data frame
+combined_data <- do.call(rbind, lapply(order_values, function(x) data2[data2$order == x, ]))
+
+```
+

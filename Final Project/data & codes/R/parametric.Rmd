@@ -1,0 +1,239 @@
+---
+title: "Parametric Model"
+author: "Mingqian Zhang"
+date: "2023-12-07"
+output: pdf_document
+---
+```{r}
+library(survival)
+library(flexsurv)
+library(ggplot2)
+library(lmtest)
+
+library(survminer)
+library(sqldf)
+library(glmnet)
+library(MASS)
+library(EnvStats)
+library(pander)
+library(MASS)
+```
+
+
+
+```{r}
+#data Preprocessing
+# Load the data
+data <- read.csv("df_final.csv")
+head(data)
+
+# wage
+data$wghist = as.factor(data$wghist)
+data$wghist = relevel(data$wghist, ref = 'never')
+
+# employment stability
+data$employ = as.factor(data$employ)
+data$employ = relevel(data$employ, ref = 'stable')
+
+# race
+data$race = as.factor(data$race)
+data$race = relevel(data$race, ref = 'nhwhite')
+
+# gender
+data$gender[data$gender == '1.male'] = 'male'
+data$gender[data$gender == '2.female'] = 'female'
+data$gender = as.factor(data$gender)
+data$gender = relevel(data$gender, ref = 'female')
+
+# education
+data$edu = as.factor(data$edu)
+data$edu = relevel(data$edu, ref = '<=12years')
+
+# parental education
+data$pedu = as.factor(data$pedu)
+data$pedu = relevel(data$pedu, ref = '<=12years')
+
+# religion
+data$religion[data$religion == '1.protestant'] = 'protestant'
+data$religion[data$religion == '2.catholic'] = 'catholic'
+data$religion[data$religion == '3.jewish'] = 'jewish'
+data$religion[data$religion == '4.none/no pref'] = 'none'
+data$religion[data$religion == '5.other'] = 'other'
+data$religion = as.factor(data$religion)
+data$religion = relevel(data$religion, ref = 'none')
+
+# living area
+data$live[data$live == '1.northeast'] = 'northeast'
+data$live[data$live == '2.midwest'] = 'midwest'
+data$live[data$live == '3.south'] = 'south'
+data$live[data$live == '4.west'] = 'west'
+data$live[data$live == '5.move'] = 'move'
+data$live = as.factor(data$live)
+data$live = relevel(data$live, ref = 'northeast')
+
+# marriage
+data$marriage = as.factor(data$marriage)
+data$marriage = relevel(data$marriage, ref = 'married')
+
+# Insurance from government
+data$insur_gov = as.factor(data$insur_gov)
+data$insur_gov = relevel(data$insur_gov, ref = 'never')
+
+# Insurance from employer
+data$insur_com = as.factor(data$insur_com)
+data$insur_com = relevel(data$insur_com, ref = 'never')
+
+# self-reported health
+data$self_health = as.factor(data$self_health)
+data$self_health = relevel(data$self_health, ref = 'good/very good/excellent')
+
+# smoke
+data$smoke = as.factor(data$smoke)
+data$smoke = relevel(data$smoke, ref = 'never')
+
+# summary
+data = data[data$age >= 63 & data$age <= 78, ]
+summary(data)
+```
+
+```{r}
+#Plot KM Curve
+surv_obj <- Surv(time = data$event, event = data$status)
+KMcurve <- survfit(surv_obj ~ 1, data = data)
+plot(KMcurve, conf.int = F, 
+     xlab = "Time", ylab = "Survival Probability", 
+     lwd = 2, col = "red",ylim = c(0.9,1.0))
+```
+```{r}
+plot(KMcurve, conf.int = F, 
+     xlab = "Time", ylab = "Complementary Log-Log Survival", 
+     lwd = 2, col = "red", fun = "cloglog")
+
+p = ggsurvplot(KMcurve, data=data, fun='cloglog', xlim = c(10.75, 30), palette='jama')$plot
+
+p + guides(color=FALSE, fill=FALSE) + theme_bw()
+
+
+```
+```{r}
+data2 <- data %>%
+  dplyr::select(-c("hhidpn" ,"wave_num", "wealth"))
+data2$age <- as.numeric(data2$age)
+head(data2)
+
+data3 <- data2 %>%
+  dplyr::select(-c("prop_pt" ,"employ", "edu","religion","live","marriage","insur_com","bmi"))
+data2$age <- as.numeric(data2$age)
+```
+
+
+
+```{r}
+#
+weibull_fit <- survreg(surv_obj ~ wghist + age + race + pedu +insur_gov + self_health + smoke, data = data3, dist = "weibull")
+summary(weibull_fit)
+
+loglogistic_fit <- survreg(surv_obj ~ wghist + age + race + pedu +insur_gov + self_health + smoke, data = data3, dist ="loglogistic")
+
+
+lognormal_fit <- survreg(surv_obj ~ wghist + age + race + pedu +insur_gov + self_health + smoke, data = data3, dist ="lognormal")
+
+
+expo_fit <- survreg(surv_obj ~ wghist + age + race + pedu +insur_gov + self_health + smoke, data = data3, dist ="exponential")
+
+
+```
+```{r}
+aic_table <- data.frame(
+  Model = c("Weibull", "Log-logistic", "Log-normal", "Expo"),
+  AIC = c(AIC(weibull_fit), AIC(loglogistic_fit), AIC(lognormal_fit), AIC(expo_fit))
+)
+
+print(aic_table)
+
+
+```
+
+
+```{r}
+library(SurvRegCensCov)
+
+#we can find the hazard ratios and CIs
+ConvertWeibull(weibull_fit, conf.level = .95)$HR
+```
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+llr_test_weibull_loglogistic <- lrtest(weibull_fit, loglogistic_fit)
+print(llr_test_weibull_loglogistic)
+
+drop1(weibull_fit,test="Chisq")
+
+```
+
+
+```{r}
+flexsurvreg(formula = surv_obj ~ wghist + age + race + pedu + insur_gov + self_health + smoke, data = data3,
+dist = "gengamma")
+```
+
+
+```{r}
+lognormal_fit <- survreg(surv_obj ~ wghist + age + race + pedu +insur_gov + self_health + smoke, data = data3, dist = "weibull")
+
+lognormal_work <- residuals(lognormal_fit,type="working")
+lognormal_dev <- residuals(lognormal_fit,type="deviance")
+lognormal_dfb <- residuals(lognormal_fit,type="dfbetas")
+lognormal_preds <- predict(lognormal_fit,type="lp") #linear predictor
+
+sortvector=C(1:3024)
+
+
+
+plot(lognormal_preds, lognormal_work, xlab="Linear Predictor",
+ylab="Working Residual", pch=19,title("Working Residuals vs. Linear Predictor"), ylim = c(-85,1))
+text(lognormal_preds, lognormal_work, labels = data3$order)
+```
+
+```{r}
+library(ggsci)
+p = ggplot() + geom_point(aes(lognormal_preds, lognormal_work), color = "#374E55") +
+  theme_bw() +
+  labs(x = "Linear Predictor", y = "Working Residual") 
+p + scale_color_jama()
+```
+
+
+```{r}
+plot(lognormal_preds, lognormal_dev, xlab="Linear Predictor", ylab="Deviance Residual",title("Deviance Residuals vs. Linear Predictor"))
+
+
+```
+```{r}
+Od1=c(1:3024)
+ data3$order=Od1
+
+```
+
+```{r}
+print(data3[data3$order==483, ])
+print(data3[data3$order==36, ])
+
+```
+
+
+
+```{r}
+plot(lognormal_dfb[,1], xlab="Observation Order", ylab="dfbeta Intercept")
+title("dfbeta Values by Observation Order")
+```
+
